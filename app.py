@@ -32,6 +32,7 @@ try:
     import Queue as queue
 except ImportError:
     import queue
+import base64
 
 # Command Line Options
 define("port", default=8088, help="Port the web app will run on")
@@ -99,6 +100,56 @@ class CleanupHandler(BaseHandler):
     def delete(self):
         clean_up_user_images(self.current_user)
 
+
+class WebcamHandler(BaseHandler):
+    @web.authenticated
+    def post(self):
+        try:
+            requests.get(ml_endpoint)
+        except requests.exceptions.ConnectionError:
+            logging.error(
+                "Lost connection to the model REST endpoint at " +
+                options.ml_endpoint)
+            self.send_error(404)
+            return
+
+        finish_ret = []
+        threads = []
+        ret_queue = queue.Queue()
+        user_img_prefix = get_user_img_prefix(self.current_user)
+        file_bytes = self.request.body
+        # file_des = file_bytes.decode('utf8').replace("'", '"')
+        file_des = file_bytes.decode('utf8')
+        # print(file_des)
+        file_des = json.loads(file_des)
+        binary_string = file_des['file'].replace('data:image/jpeg;base64,', '')
+        print(binary_string)
+        binary_data = base64.b64decode(binary_string)
+        # binary_data = a2b_base64(binary_data)
+        file_name = user_img_prefix + 'webcam.jpeg'
+        rel_path = static_img_path + file_name
+        with open(rel_path, 'wb') as output_file:
+            output_file.write(binary_data)
+        t = threading.Thread(target=run_ml_queued,
+                                args=(rel_path, ret_queue))
+        threads.append(t)
+        t.start()
+
+        for t in threads:
+            t.join()
+
+        sorted_ret = sorted(list(ret_queue.queue), key=lambda t: t[0].lower())
+        for rel_path, caption in sorted_ret:
+            finish_ret.append({
+                "file_name": rel_path,
+                "caption": caption[0]['caption']
+            })
+
+        if not finish_ret:
+            self.send_error(400)
+            return
+        sort_image_captions()
+        self.finish(json.dumps(finish_ret))
 
 class UploadHandler(BaseHandler):
     @web.authenticated
@@ -273,7 +324,8 @@ def make_app():
         (r"/upload", UploadHandler),
         (r"/cleanup", CleanupHandler),
         (r"/detail", DetailHandler),
-        (r"/login", LoginHandler)
+        (r"/login", LoginHandler),
+        (r"/webcam", WebcamHandler)
     ]
 
     configs = {
